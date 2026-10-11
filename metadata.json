@@ -1,0 +1,6 @@
+{
+  "name": "AI-Enabled Drone & Counter-Drone Threat Simulation Trainer (SIH 2026 #26247)",
+  "description": "Tactical virtual simulation trainer for drone identification, aerial threat assessment, and counter-UAS observation workflows designed for Smart India Hackathon 2026.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
