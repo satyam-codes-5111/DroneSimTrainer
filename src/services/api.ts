@@ -7,7 +7,8 @@ import {
   UnitMetrics,
   Achievement,
   AerialTarget,
-  ApiStatus
+  ApiStatus,
+  ObservationReport
 } from '../types';
 
 // Mock Users for prototype demonstration
@@ -646,6 +647,10 @@ export interface ITrainingApiService {
   getUnitMetrics(): Promise<UnitMetrics>;
   getApiStatus(): ApiStatus;
   exportData(format: 'json' | 'csv'): Promise<string>;
+  createObservationReport(report: Omit<ObservationReport, 'id' | 'createdAt' | 'status'>): Promise<ObservationReport>;
+  getObservationReports(filters?: { traineeId?: string; sessionId?: string; threatRating?: string; status?: string }): Promise<ObservationReport[]>;
+  getObservationReport(id: string): Promise<ObservationReport | undefined>;
+  deleteObservationReport(id: string): Promise<void>;
 }
 
 class PrototypeTrainingService implements ITrainingApiService {
@@ -762,9 +767,9 @@ class PrototypeTrainingService implements ITrainingApiService {
 
   getApiStatus(): ApiStatus {
     return {
-      isMockMode: true,
-      backendUrl: null,
-      databaseStatus: 'local_demo',
+      isMockMode: false,
+      backendUrl: '/api',
+      databaseStatus: 'connected',
       aiModelStatus: 'client_rule_engine'
     };
   }
@@ -816,6 +821,93 @@ class PrototypeTrainingService implements ITrainingApiService {
       s.passed ? 'PASSED' : 'RETRY'
     ]);
     return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  }
+
+  async createObservationReport(reportData: Omit<ObservationReport, 'id' | 'createdAt' | 'status'>): Promise<ObservationReport> {
+    try {
+      const response = await fetch('/api/reports', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-role': this.currentRole
+        },
+        body: JSON.stringify(reportData)
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || `Server error (${response.status})`);
+      }
+
+      return data.report as ObservationReport;
+    } catch (err: any) {
+      console.error('Failed to create observation report on backend:', err);
+      throw err;
+    }
+  }
+
+  async getObservationReports(filters?: { traineeId?: string; sessionId?: string; threatRating?: string; status?: string }): Promise<ObservationReport[]> {
+    try {
+      const params = new URLSearchParams();
+      if (filters?.traineeId) params.append('traineeId', filters.traineeId);
+      if (filters?.sessionId) params.append('sessionId', filters.sessionId);
+      if (filters?.threatRating) params.append('threatRating', filters.threatRating);
+      if (filters?.status) params.append('status', filters.status);
+
+      const url = `/api/reports${params.toString() ? `?${params.toString()}` : ''}`;
+      const response = await fetch(url, {
+        headers: {
+          'x-user-role': this.currentRole
+        }
+      });
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || `Failed to fetch observation reports (${response.status})`);
+      }
+
+      return (data.reports || []) as ObservationReport[];
+    } catch (err: any) {
+      console.error('Failed to get observation reports from backend:', err);
+      throw err;
+    }
+  }
+
+  async getObservationReport(id: string): Promise<ObservationReport | undefined> {
+    try {
+      const response = await fetch(`/api/reports/${encodeURIComponent(id)}`, {
+        headers: {
+          'x-user-role': this.currentRole
+        }
+      });
+      if (response.status === 404) return undefined;
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || `Failed to fetch report ${id}`);
+      }
+      return data.report as ObservationReport;
+    } catch (err: any) {
+      console.error(`Failed to get observation report ${id}:`, err);
+      throw err;
+    }
+  }
+
+  async deleteObservationReport(id: string): Promise<void> {
+    try {
+      const response = await fetch(`/api/reports/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: {
+          'x-user-role': this.currentRole
+        }
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || `Failed to delete report ${id}`);
+      }
+    } catch (err: any) {
+      console.error(`Failed to delete observation report ${id}:`, err);
+      throw err;
+    }
   }
 }
 

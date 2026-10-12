@@ -6,6 +6,7 @@ import {
   TraineeAssessment,
   DroneType
 } from '../../types';
+import { ObservationReportsPanel } from '../reports/ObservationReportsPanel';
 import { 
   Users, 
   Plus, 
@@ -43,7 +44,7 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({
   onViewAAR,
   onLaunchDrill
 }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'scenarios' | 'assessments' | 'history'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'scenarios' | 'assessments' | 'history' | 'reports'>('overview');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [selectedTraineeForEdit, setSelectedTraineeForEdit] = useState<TraineeAssessment | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -192,6 +193,16 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({
             }`}
           >
             All Session Records ({history.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('reports')}
+            className={`px-3 py-1.5 rounded font-medium transition-colors ${
+              activeTab === 'reports'
+                ? 'bg-slate-800 text-emerald-400 font-semibold'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Observation Reports Database
           </button>
         </div>
       </div>
@@ -449,6 +460,13 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* TAB 5: PERSISTENT OBSERVATION REPORTS */}
+      {activeTab === 'reports' && (
+        <div className="w-full">
+          <ObservationReportsPanel />
         </div>
       )}
 

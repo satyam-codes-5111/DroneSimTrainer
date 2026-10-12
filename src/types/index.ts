@@ -92,6 +92,25 @@ export interface TargetObservationLog {
   distanceMeters: number;
 }
 
+export type ObservationReportStatus = 'VERIFIED' | 'PENDING_REVIEW' | 'FLAGGED' | 'RESOLVED';
+
+export interface ObservationReport {
+  id: string;
+  sessionId: string;
+  traineeId: string;
+  traineeName?: string;
+  droneClassification: DroneType;
+  threatRating: ThreatLevel;
+  observationNotes: string;
+  createdAt: string;
+  status: ObservationReportStatus;
+  targetId?: string;
+  targetDisplayName?: string;
+  distanceMeters?: number;
+  azimuthDeg?: number;
+  elevationDeg?: number;
+}
+
 export interface TrainingSessionResult {
   id: string;
   scenarioId: string;
@@ -161,4 +180,14 @@ export interface ApiStatus {
   backendUrl: string | null;
   databaseStatus: 'unconnected' | 'connected' | 'local_demo';
   aiModelStatus: 'client_rule_engine' | 'connected_gemini' | 'standby';
+  storageEngine?: 'postgresql' | 'filesystem_json';
+  postgresConfigured?: boolean;
+  postgresConnected?: boolean;
+  totalPersistedReports?: number;
+  postgresDetails?: {
+    databaseName?: string;
+    serverVersion?: string;
+    error?: string;
+    connectionInstructions?: string;
+  };
 }

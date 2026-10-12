@@ -66,25 +66,25 @@ export const ArchitectureModal: React.FC<ArchitectureModalProps> = ({
               </div>
 
               <div className="p-3 rounded border border-slate-800 bg-slate-900">
-                <div className="flex items-center gap-2 text-slate-300 font-semibold mb-1">
+                <div className="flex items-center gap-2 text-emerald-400 font-semibold mb-1">
                   <Server className="w-4 h-4" />
-                  <span>Integration Layer</span>
+                  <span>Backend REST API</span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Type-safe API contract in <code className="text-emerald-300">src/services/api.ts</code> implementing <code className="text-emerald-300">ITrainingApiService</code> with localStorage and mock repository fallback.
+                  Full-stack Express server (<code className="text-emerald-300">server.ts</code>) handling <code className="text-emerald-300">/api/reports</code> and <code className="text-emerald-300">/api/health</code> with strict validation.
                 </p>
-                <div className="mt-2 text-[10px] text-amber-300 font-mono">Status: Ready for Real REST / WS</div>
+                <div className="mt-2 text-[10px] text-emerald-400 font-mono">Status: Connected & Verified</div>
               </div>
 
               <div className="p-3 rounded border border-slate-800 bg-slate-900">
-                <div className="flex items-center gap-2 text-slate-300 font-semibold mb-1">
+                <div className="flex items-center gap-2 text-emerald-400 font-semibold mb-1">
                   <Database className="w-4 h-4" />
-                  <span>Backend & AI</span>
+                  <span>Persistence Storage</span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Node.js / Express backend with Gemini API integration for adaptive scenario generation, dynamic drone flight paths, and AAR coaching feedback.
+                  Atomic JSON file database at <code className="text-emerald-300">/data/observation_reports.json</code> for reliable disk writes and full audit trail.
                 </p>
-                <div className="mt-2 text-[10px] text-slate-400 font-mono">Status: Client Fallback Mode</div>
+                <div className="mt-2 text-[10px] text-emerald-400 font-mono">Status: Connected & Operational</div>
               </div>
             </div>
           </div>

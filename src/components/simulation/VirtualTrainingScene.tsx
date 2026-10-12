@@ -26,8 +26,15 @@ import {
   Radio, 
   Camera, 
   ChevronRight,
-  Info
+  Info,
+  FileText,
+  Database,
+  AlertTriangle,
+  Loader2,
+  X
 } from 'lucide-react';
+import { apiService } from '../../services/api';
+import { ObservationReportsPanel } from '../reports/ObservationReportsPanel';
 
 interface VirtualTrainingSceneProps {
   scenario: Scenario;
@@ -45,6 +52,14 @@ export const VirtualTrainingScene: React.FC<VirtualTrainingSceneProps> = ({
   traineeName
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
+
+  // Persistent Session ID for this simulation run
+  const [sessionId] = useState(() => `SESS-${Date.now().toString().slice(-6)}`);
+  const [observationNotes, setObservationNotes] = useState<string>('');
+  const [isSubmittingReport, setIsSubmittingReport] = useState<boolean>(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const [isReportsModalOpen, setIsReportsModalOpen] = useState<boolean>(false);
+  const [persistedReportsCount, setPersistedReportsCount] = useState<number>(0);
 
   // Simulation controls state
   const [isPaused, setIsPaused] = useState(false);
@@ -220,27 +235,35 @@ export const VirtualTrainingScene: React.FC<VirtualTrainingSceneProps> = ({
   useEffect(() => {
     if (!mountRef.current) return;
 
-    const width = mountRef.current.clientWidth;
-    const height = mountRef.current.clientHeight;
+    const width = Math.max(mountRef.current.clientWidth || window.innerWidth || 800, 320);
+    const height = Math.max(mountRef.current.clientHeight || (window.innerHeight - 80) || 600, 300);
 
-    // Scene
-    const scene = new THREE.Scene();
-    sceneRef.current = scene;
+    let scene: THREE.Scene;
+    let camera: THREE.PerspectiveCamera;
+    let renderer: THREE.WebGLRenderer;
+    try {
+      // Scene
+      scene = new THREE.Scene();
+      sceneRef.current = scene;
 
-    // Camera (65 deg FOV default at observer tower origin)
-    const camera = new THREE.PerspectiveCamera(65, width / height, 1, 4000);
-    camera.position.set(0, 10, 0);
-    cameraRef.current = camera;
+      // Camera (65 deg FOV default at observer tower origin)
+      camera = new THREE.PerspectiveCamera(65, width / height, 1, 4000);
+      camera.position.set(0, 10, 0);
+      cameraRef.current = camera;
 
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-    renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.0;
-    rendererRef.current = renderer;
+      // Renderer
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      renderer.setSize(width, height);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.0;
+      rendererRef.current = renderer;
 
-    mountRef.current.appendChild(renderer.domElement);
+      mountRef.current.appendChild(renderer.domElement);
+    } catch (err) {
+      console.warn('VirtualTrainingScene WebGL initialization error:', err);
+      return;
+    }
 
     // Ground Terrain / Observation Outpost
     const terrainGeo = new THREE.PlaneGeometry(3000, 3000, 64, 64);
@@ -475,53 +498,85 @@ export const VirtualTrainingScene: React.FC<VirtualTrainingSceneProps> = ({
     return () => clearInterval(interval);
   }, [isPaused]);
 
-  // Handle Trainee Classification Submission
-  const handleSubmitClassification = () => {
+  // Handle Trainee Classification Submission with Backend Persistence
+  const handleSubmitClassification = async () => {
     if (!selectedTarget) return;
 
-    const isCorrectType = inputClass === selectedTarget.droneType;
-    const isCorrectThreat = inputThreat === selectedTarget.threatLevel;
+    setIsSubmittingReport(true);
+    setSubmissionError(null);
 
-    const newLog: TargetObservationLog = {
-      targetId: selectedTarget.id,
-      actualType: selectedTarget.droneType,
-      actualThreat: selectedTarget.threatLevel,
-      userType: inputClass,
-      userThreat: inputThreat,
-      isCorrectType,
-      isCorrectThreat,
-      timestampSec: elapsedSec,
-      distanceMeters: selectedTarget.distanceMeters
-    };
+    const notesToSave = observationNotes.trim() || 
+      `Optical & sensor observation: Contact ${selectedTarget.displayName} detected at ${selectedTarget.distanceMeters}m range, altitude ${selectedTarget.altitudeMeters}m, Azimuth ${Math.round(selectedTarget.azimuthDeg)}°. RCS: ${selectedTarget.radarCrossSection}. Acoustic signature: ${selectedTarget.acousticSignature.split(',')[0]}.`;
 
-    setObservationLogs(prev => {
-      const filtered = prev.filter(l => l.targetId !== selectedTarget.id);
-      return [...filtered, newLog];
-    });
+    try {
+      // 1. Persist to real backend API (POST /api/reports)
+      const savedReport = await apiService.createObservationReport({
+        sessionId,
+        traineeId,
+        traineeName,
+        droneClassification: inputClass,
+        threatRating: inputThreat,
+        observationNotes: notesToSave,
+        targetId: selectedTarget.id,
+        targetDisplayName: selectedTarget.displayName,
+        distanceMeters: selectedTarget.distanceMeters,
+        azimuthDeg: Math.round(selectedTarget.azimuthDeg),
+        elevationDeg: Math.round(selectedTarget.elevationDeg)
+      });
 
-    setTargets(prev =>
-      prev.map(t =>
-        t.id === selectedTarget.id
-          ? {
-              ...t,
-              isIdentified: true,
-              classifiedAs: inputClass,
-              classifiedThreat: inputThreat,
-              detectedAtSec: elapsedSec
-            }
-          : t
-      )
-    );
+      // 2. Update local in-memory simulation tracking
+      const isCorrectType = inputClass === selectedTarget.droneType;
+      const isCorrectThreat = inputThreat === selectedTarget.threatLevel;
 
-    setFeedbackNotice(
-      `Observation Report Logged for ${selectedTarget.displayName} · Classified: ${inputClass.replace(/_/g, ' ')} [Threat: ${inputThreat.toUpperCase()}]`
-    );
-    setTimeout(() => setFeedbackNotice(null), 4000);
+      const newLog: TargetObservationLog = {
+        targetId: selectedTarget.id,
+        actualType: selectedTarget.droneType,
+        actualThreat: selectedTarget.threatLevel,
+        userType: inputClass,
+        userThreat: inputThreat,
+        isCorrectType,
+        isCorrectThreat,
+        timestampSec: elapsedSec,
+        distanceMeters: selectedTarget.distanceMeters
+      };
 
-    // Auto advance to next unclassified target
-    const nextUnidentified = targets.find(t => t.id !== selectedTarget.id && !t.isIdentified);
-    if (nextUnidentified) {
-      focusOnTarget(nextUnidentified);
+      setObservationLogs(prev => {
+        const filtered = prev.filter(l => l.targetId !== selectedTarget.id);
+        return [...filtered, newLog];
+      });
+
+      setTargets(prev =>
+        prev.map(t =>
+          t.id === selectedTarget.id
+            ? {
+                ...t,
+                isIdentified: true,
+                classifiedAs: inputClass,
+                classifiedThreat: inputThreat,
+                detectedAtSec: elapsedSec
+              }
+            : t
+        )
+      );
+
+      setPersistedReportsCount(prev => prev + 1);
+      setObservationNotes('');
+      setFeedbackNotice(
+        `Observation Report ${savedReport.id} Persisted! Status: ${savedReport.status} · ${inputClass.replace(/_/g, ' ')} [Threat: ${inputThreat.toUpperCase()}]`
+      );
+      setTimeout(() => setFeedbackNotice(null), 5000);
+
+      // Auto advance to next unclassified target
+      const nextUnidentified = targets.find(t => t.id !== selectedTarget.id && !t.isIdentified);
+      if (nextUnidentified) {
+        focusOnTarget(nextUnidentified);
+      }
+    } catch (err: any) {
+      console.error('Failed to persist observation report to database:', err);
+      // Strictly set error and do NOT show success message
+      setSubmissionError(err.message || 'Database write failed. Report was not saved to storage.');
+    } finally {
+      setIsSubmittingReport(false);
     }
   };
 
@@ -705,6 +760,20 @@ export const VirtualTrainingScene: React.FC<VirtualTrainingSceneProps> = ({
 
         {/* Right: Quick Controls & Abort */}
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsReportsModalOpen(true)}
+            className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-emerald-500/50 text-slate-300 hover:text-white rounded text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+            title="View persistent observation reports database"
+          >
+            <Database className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden sm:inline">Database Reports</span>
+            {persistedReportsCount > 0 && (
+              <span className="bg-emerald-500 text-slate-950 font-mono font-bold text-[10px] px-1.5 py-0.2 rounded-full">
+                {persistedReportsCount}
+              </span>
+            )}
+          </button>
+
           <button
             onClick={onExitWithoutSaving}
             className="text-slate-400 hover:text-rose-400 transition-colors p-1"
@@ -992,12 +1061,54 @@ export const VirtualTrainingScene: React.FC<VirtualTrainingSceneProps> = ({
                   </button>
                 </div>
 
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-300 block mb-1">
+                    Observation Notes (Saved to Persistent Database)
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Enter observation notes, payload inspection, altitude, or maneuvers..."
+                    value={observationNotes}
+                    onChange={e => setObservationNotes(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 text-xs text-white rounded p-2 focus:ring-1 focus:ring-emerald-400 outline-none placeholder-slate-500 resize-none"
+                  />
+                </div>
+
+                {submissionError && (
+                  <div className="p-2.5 rounded bg-rose-950/80 border border-rose-500/50 text-rose-300 text-xs flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold">Database Write Failed</p>
+                      <p className="text-[11px] text-rose-300/90 mt-0.5">{submissionError}</p>
+                    </div>
+                  </div>
+                )}
+
                 <button
                   onClick={handleSubmitClassification}
-                  className="w-full py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-emerald-500/10"
+                  disabled={isSubmittingReport}
+                  className="w-full py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-emerald-500/10 disabled:opacity-50 cursor-pointer"
                 >
-                  <Crosshair className="w-3.5 h-3.5" />
-                  <span>Log Observation Report</span>
+                  {isSubmittingReport ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Saving to Database...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Crosshair className="w-3.5 h-3.5" />
+                      <span>Log Observation Report</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsReportsModalOpen(true)}
+                  className="w-full py-1 text-[11px] text-slate-400 hover:text-emerald-300 underline flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Database className="w-3 h-3 text-emerald-400" />
+                  <span>View Database Reports ({persistedReportsCount} in session)</span>
                 </button>
               </div>
             </div>
@@ -1020,6 +1131,18 @@ export const VirtualTrainingScene: React.FC<VirtualTrainingSceneProps> = ({
           <span>Click and drag view to rotate optical orientation</span>
         </div>
       </div>
+
+      {/* Persistent Reports Modal Drawer */}
+      {isReportsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md">
+          <ObservationReportsPanel
+            isModal
+            sessionId={sessionId}
+            traineeId={traineeId}
+            onClose={() => setIsReportsModalOpen(false)}
+          />
+        </div>
+      )}
     </div>
   );
 };
