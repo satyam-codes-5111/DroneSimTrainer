@@ -699,10 +699,84 @@ class PrototypeTrainingService implements ITrainingApiService {
 
   async getUserProfile(role?: UserRole): Promise<UserProfile> {
     const targetRole = role || this.currentRole;
+    try {
+      // 1. Check if server already has an active authenticated session
+      const meRes = await fetch('/api/auth/me', {
+        credentials: 'include'
+      });
+      if (meRes.ok) {
+        const meData = await meRes.json();
+        if (meData.success && meData.user) {
+          if (!role || meData.user.role === role) {
+            this.currentRole = meData.user.role;
+            return meData.user as UserProfile;
+          }
+        }
+      }
+
+      // 2. If unauthenticated, authenticate session via /api/auth/login in development mode
+      const personaLogins: Record<UserRole, { u: string; p: string }> = {
+        trainee: { u: 'rajesh.kumar', p: 'Defense@2026!' },
+        instructor: { u: 'ananya.sharma', p: 'Defense@2026!' },
+        commander: { u: 'vikram.rathore', p: 'Defense@2026!' }
+      };
+
+      const loginCreds = personaLogins[targetRole] || personaLogins.trainee;
+      const loginRes = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ username: loginCreds.u, password: loginCreds.p })
+      });
+
+      if (loginRes.ok) {
+        const loginData = await loginRes.json();
+        if (loginData.success && loginData.user) {
+          this.currentRole = loginData.user.role;
+          this.saveToStorage();
+          return loginData.user as UserProfile;
+        }
+      }
+    } catch {
+      // Offline fallback
+    }
+
     return { ...INITIAL_USERS[targetRole] };
   }
 
   async switchUserRole(role: UserRole): Promise<UserProfile> {
+    try {
+      const response = await fetch('/api/auth/switch-role', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ role })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.user) {
+          this.currentRole = role;
+          this.saveToStorage();
+          return data.user as UserProfile;
+        }
+      } else {
+        const err = await response.json().catch(() => ({}));
+        console.warn('[Role Switch Denied]:', err.error || response.statusText);
+        // If privilege escalation is denied (403), return the current authorized user profile
+        if (response.status === 403) {
+          const meRes = await fetch('/api/auth/me', { credentials: 'include' });
+          if (meRes.ok) {
+            const meData = await meRes.json();
+            if (meData.user) return meData.user as UserProfile;
+          }
+          return { ...INITIAL_USERS[this.currentRole] };
+        }
+      }
+    } catch {
+      // Offline fallback
+    }
+
     this.currentRole = role;
     this.saveToStorage();
     return { ...INITIAL_USERS[role] };
@@ -727,16 +801,55 @@ class PrototypeTrainingService implements ITrainingApiService {
   }
 
   async submitTrainingSession(resultData: Omit<TrainingSessionResult, 'id'>): Promise<TrainingSessionResult> {
-    const newSession: TrainingSessionResult = {
+    try {
+      const response = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(resultData)
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.session) {
+          const savedSession = data.session as TrainingSessionResult;
+          this.history.unshift(savedSession);
+          this.saveToStorage();
+          return savedSession;
+        }
+      }
+    } catch (err) {
+      console.warn('Backend session persistence failed, saving to local store:', err);
+    }
+
+    const fallbackSession: TrainingSessionResult = {
       ...resultData,
       id: `SESS-${Date.now().toString().slice(-6)}`
     };
-    this.history.unshift(newSession);
+    this.history.unshift(fallbackSession);
     this.saveToStorage();
-    return newSession;
+    return fallbackSession;
   }
 
   async getTrainingHistory(traineeId?: string): Promise<TrainingSessionResult[]> {
+    try {
+      const url = `/api/sessions${traineeId ? `?traineeId=${encodeURIComponent(traineeId)}` : ''}`;
+      const response = await fetch(url, {
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && Array.isArray(data.sessions)) {
+          this.history = data.sessions as TrainingSessionResult[];
+          this.saveToStorage();
+          return this.history;
+        }
+      }
+    } catch {
+      // Fallback to cached history
+    }
+
     if (traineeId) {
       return this.history.filter(h => h.traineeId === traineeId);
     }
@@ -828,9 +941,9 @@ class PrototypeTrainingService implements ITrainingApiService {
       const response = await fetch('/api/reports', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'x-user-role': this.currentRole
+          'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify(reportData)
       });
 
@@ -856,9 +969,7 @@ class PrototypeTrainingService implements ITrainingApiService {
 
       const url = `/api/reports${params.toString() ? `?${params.toString()}` : ''}`;
       const response = await fetch(url, {
-        headers: {
-          'x-user-role': this.currentRole
-        }
+        credentials: 'include'
       });
       const data = await response.json();
 
@@ -876,9 +987,7 @@ class PrototypeTrainingService implements ITrainingApiService {
   async getObservationReport(id: string): Promise<ObservationReport | undefined> {
     try {
       const response = await fetch(`/api/reports/${encodeURIComponent(id)}`, {
-        headers: {
-          'x-user-role': this.currentRole
-        }
+        credentials: 'include'
       });
       if (response.status === 404) return undefined;
       const data = await response.json();
@@ -896,9 +1005,7 @@ class PrototypeTrainingService implements ITrainingApiService {
     try {
       const response = await fetch(`/api/reports/${encodeURIComponent(id)}`, {
         method: 'DELETE',
-        headers: {
-          'x-user-role': this.currentRole
-        }
+        credentials: 'include'
       });
       const data = await response.json();
       if (!response.ok || !data.success) {

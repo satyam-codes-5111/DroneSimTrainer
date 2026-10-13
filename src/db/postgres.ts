@@ -60,6 +60,67 @@ export interface DbObservationReport {
   updatedAt?: string;
 }
 
+export interface DbTrainingSession {
+  id: string;
+  scenarioId: string;
+  scenarioTitle: string;
+  traineeId: string;
+  traineeName: string;
+  date: string;
+  durationSec: number;
+  totalTargets: number;
+  identifiedTargets: number;
+  accuracyRate: number;
+  avgIdentificationTimeSec: number;
+  falseAlarmCount: number;
+  perimeterSafetyScore: number;
+  overallScore: number;
+  passed: boolean;
+  observationLogs: any[];
+  evaluatorNotes: string[];
+  recommendations: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SanitizedUser {
+  id: string;
+  username: string;
+  email?: string;
+  name: string;
+  callsign: string;
+  role: 'trainee' | 'instructor' | 'commander';
+  rank: string;
+  unit: string;
+  serviceId?: string;
+  level: number;
+  xp: number;
+  nextLevelXp: number;
+  totalMissions: number;
+  accuracyRate: number;
+  avgResponseTimeSec: number;
+  qualificationStatus: string;
+  avatarInitials: string;
+  status: string;
+}
+
+export interface DbUser extends SanitizedUser {
+  passwordHash: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface DbAuthSession {
+  id: string;
+  userId: string;
+  role: 'trainee' | 'instructor' | 'commander';
+  ipAddress?: string;
+  userAgent?: string;
+  createdAt?: string;
+  expiresAt: string;
+  user?: SanitizedUser;
+}
+
 /**
  * Generates sanitized remediation guidance for database connection issues.
  */
@@ -140,6 +201,38 @@ export function getPostgresPool(): Pool | null {
          connectionString.includes('ssl=true') ||
          isCloudHost);
 
+    // PostgreSQL TLS Certificate Verification (Security Hardening)
+    // Enforces rejectUnauthorized: true with trusted CA certificate verification
+    let sslConfig: PoolConfig['ssl'] = undefined;
+    if (useSsl) {
+      let caCert = process.env.PG_SSL_CA || process.env.DATABASE_CA_CERT;
+      if (!caCert && process.env.PG_SSL_CA_PATH && fs.existsSync(process.env.PG_SSL_CA_PATH)) {
+        try {
+          caCert = fs.readFileSync(process.env.PG_SSL_CA_PATH, 'utf-8');
+        } catch {
+          // ignore read error
+        }
+      }
+      // Auto-load trusted provider CA bundle if present (e.g. Supabase, Neon)
+      if (!caCert) {
+        const defaultCaPath = path.resolve(process.cwd(), 'certs', 'supabase-root-ca.pem');
+        if (fs.existsSync(defaultCaPath)) {
+          try {
+            caCert = fs.readFileSync(defaultCaPath, 'utf-8');
+          } catch {
+            // ignore read error
+          }
+        }
+      }
+
+      const rejectUnauthorized = process.env.PG_SSL_REJECT_UNAUTHORIZED === 'false' ? false : true;
+
+      sslConfig = {
+        rejectUnauthorized,
+        ...(caCert ? { ca: caCert } : {})
+      };
+    }
+
     // Parse URL components to support literal raw passwords with special characters (e.g. Supabase poolers)
     const match = connectionString.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:/]+)(?::(\d+))?\/([^?]*)/);
 
@@ -155,7 +248,7 @@ export function getPostgresPool(): Pool | null {
         max: 10,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 5000,
-        ssl: useSsl ? { rejectUnauthorized: false } : undefined
+        ssl: sslConfig
       };
     } else {
       config = {
@@ -163,7 +256,7 @@ export function getPostgresPool(): Pool | null {
         max: 10,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 5000,
-        ssl: useSsl ? { rejectUnauthorized: false } : undefined
+        ssl: sslConfig
       };
     }
 
@@ -298,27 +391,43 @@ export function mapRowToReport(row: any): DbObservationReport {
 }
 
 /**
- * Executes database migrations against PostgreSQL.
+ * Executes database migrations against PostgreSQL in sequential order.
  */
-export async function runPostgresMigrations(): Promise<{ success: boolean; message: string }> {
+export async function runPostgresMigrations(): Promise<{ success: boolean; message: string; applied: string[] }> {
   const p = getPostgresPool();
   if (!p) {
     throw new Error('PostgreSQL is not configured. DATABASE_URL is required to run migrations.');
   }
 
-  const migrationFile = path.resolve(process.cwd(), 'migrations', '001_create_observation_reports.sql');
-  if (!fs.existsSync(migrationFile)) {
-    throw new Error(`Migration file not found at ${migrationFile}`);
+  const migrationsDir = path.resolve(process.cwd(), 'migrations');
+  if (!fs.existsSync(migrationsDir)) {
+    throw new Error(`Migrations directory not found at ${migrationsDir}`);
   }
 
-  const sql = fs.readFileSync(migrationFile, 'utf-8');
+  const files = fs.readdirSync(migrationsDir)
+    .filter(f => f.endsWith('.sql'))
+    .sort();
+
+  if (files.length === 0) {
+    return { success: true, message: 'No migration files found.', applied: [] };
+  }
+
   const client = await p.connect();
+  const applied: string[] = [];
 
   try {
-    await client.query('BEGIN');
-    await client.query(sql);
-    await client.query('COMMIT');
-    return { success: true, message: 'Migration 001_create_observation_reports executed successfully.' };
+    for (const file of files) {
+      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
+      await client.query('BEGIN');
+      await client.query(sql);
+      await client.query('COMMIT');
+      applied.push(file);
+    }
+    return {
+      success: true,
+      message: `Executed ${applied.length} migration(s) successfully: ${applied.join(', ')}`,
+      applied
+    };
   } catch (err: any) {
     await client.query('ROLLBACK');
     throw new Error(`Migration failed: ${err.message}`);
@@ -452,5 +561,191 @@ export async function deleteReportPg(id: string): Promise<boolean> {
   }
 
   const result = await p.query('DELETE FROM observation_reports WHERE id = $1 RETURNING id;', [id]);
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Maps a snake_case PostgreSQL row to the standard camelCase DbTrainingSession contract.
+ */
+export function mapRowToTrainingSession(row: any): DbTrainingSession {
+  const parseJsonField = (val: any): any[] => {
+    if (!val) return [];
+    if (typeof val === 'string') {
+      try {
+        const parsed = JSON.parse(val);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return Array.isArray(val) ? val : [];
+  };
+
+  return {
+    id: row.id,
+    scenarioId: row.scenario_id,
+    scenarioTitle: row.scenario_title,
+    traineeId: row.trainee_id,
+    traineeName: row.trainee_name,
+    date: row.date,
+    durationSec: Number(row.duration_sec),
+    totalTargets: Number(row.total_targets),
+    identifiedTargets: Number(row.identified_targets),
+    accuracyRate: Number(row.accuracy_rate),
+    avgIdentificationTimeSec: Number(row.avg_identification_time_sec),
+    falseAlarmCount: Number(row.false_alarm_count),
+    perimeterSafetyScore: Number(row.perimeter_safety_score),
+    overallScore: Number(row.overall_score),
+    passed: Boolean(row.passed),
+    observationLogs: parseJsonField(row.observation_logs),
+    evaluatorNotes: parseJsonField(row.evaluator_notes),
+    recommendations: parseJsonField(row.recommendations),
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : undefined,
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : undefined
+  };
+}
+
+/**
+ * Inserts or idempotently updates a training session in PostgreSQL.
+ */
+export async function insertTrainingSessionPg(session: DbTrainingSession): Promise<DbTrainingSession> {
+  const p = getPostgresPool();
+  if (!p) {
+    throw new Error('PostgreSQL pool not available.');
+  }
+
+  const query = `
+    INSERT INTO training_sessions (
+      id,
+      scenario_id,
+      scenario_title,
+      trainee_id,
+      trainee_name,
+      date,
+      duration_sec,
+      total_targets,
+      identified_targets,
+      accuracy_rate,
+      avg_identification_time_sec,
+      false_alarm_count,
+      perimeter_safety_score,
+      overall_score,
+      passed,
+      observation_logs,
+      evaluator_notes,
+      recommendations,
+      created_at,
+      updated_at
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW()
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      scenario_id = EXCLUDED.scenario_id,
+      scenario_title = EXCLUDED.scenario_title,
+      trainee_id = EXCLUDED.trainee_id,
+      trainee_name = EXCLUDED.trainee_name,
+      date = EXCLUDED.date,
+      duration_sec = EXCLUDED.duration_sec,
+      total_targets = EXCLUDED.total_targets,
+      identified_targets = EXCLUDED.identified_targets,
+      accuracy_rate = EXCLUDED.accuracy_rate,
+      avg_identification_time_sec = EXCLUDED.avg_identification_time_sec,
+      false_alarm_count = EXCLUDED.false_alarm_count,
+      perimeter_safety_score = EXCLUDED.perimeter_safety_score,
+      overall_score = EXCLUDED.overall_score,
+      passed = EXCLUDED.passed,
+      observation_logs = EXCLUDED.observation_logs,
+      evaluator_notes = EXCLUDED.evaluator_notes,
+      recommendations = EXCLUDED.recommendations,
+      updated_at = NOW()
+    RETURNING *;
+  `;
+
+  const values = [
+    session.id,
+    session.scenarioId,
+    session.scenarioTitle,
+    session.traineeId,
+    session.traineeName,
+    session.date,
+    session.durationSec,
+    session.totalTargets,
+    session.identifiedTargets,
+    session.accuracyRate,
+    session.avgIdentificationTimeSec,
+    session.falseAlarmCount,
+    session.perimeterSafetyScore,
+    session.overallScore,
+    session.passed,
+    JSON.stringify(session.observationLogs || []),
+    JSON.stringify(session.evaluatorNotes || []),
+    JSON.stringify(session.recommendations || [])
+  ];
+
+  const result = await p.query(query, values);
+  return mapRowToTrainingSession(result.rows[0]);
+}
+
+/**
+ * Retrieves training sessions from PostgreSQL with optional filtering.
+ */
+export async function getTrainingSessionsPg(filters?: {
+  traineeId?: string;
+  scenarioId?: string;
+}): Promise<DbTrainingSession[]> {
+  const p = getPostgresPool();
+  if (!p) {
+    throw new Error('PostgreSQL pool not available.');
+  }
+
+  const conditions: string[] = [];
+  const values: any[] = [];
+  let paramIdx = 1;
+
+  if (filters?.traineeId) {
+    conditions.push(`trainee_id = $${paramIdx++}`);
+    values.push(filters.traineeId);
+  }
+  if (filters?.scenarioId) {
+    conditions.push(`scenario_id = $${paramIdx++}`);
+    values.push(filters.scenarioId);
+  }
+
+  let sql = 'SELECT * FROM training_sessions';
+  if (conditions.length > 0) {
+    sql += ' WHERE ' + conditions.join(' AND ');
+  }
+  sql += ' ORDER BY created_at DESC;';
+
+  const result = await p.query(sql, values);
+  return result.rows.map(mapRowToTrainingSession);
+}
+
+/**
+ * Retrieves a single training session by ID from PostgreSQL.
+ */
+export async function getTrainingSessionByIdPg(id: string): Promise<DbTrainingSession | null> {
+  const p = getPostgresPool();
+  if (!p) {
+    throw new Error('PostgreSQL pool not available.');
+  }
+
+  const result = await p.query('SELECT * FROM training_sessions WHERE id = $1 LIMIT 1;', [id]);
+  if (result.rows.length === 0) {
+    return null;
+  }
+  return mapRowToTrainingSession(result.rows[0]);
+}
+
+/**
+ * Deletes a training session by ID from PostgreSQL.
+ */
+export async function deleteTrainingSessionPg(id: string): Promise<boolean> {
+  const p = getPostgresPool();
+  if (!p) {
+    throw new Error('PostgreSQL pool not available.');
+  }
+
+  const result = await p.query('DELETE FROM training_sessions WHERE id = $1 RETURNING id;', [id]);
   return (result.rowCount ?? 0) > 0;
 }

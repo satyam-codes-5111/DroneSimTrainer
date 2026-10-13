@@ -32,16 +32,35 @@ async function runTests() {
     const healthData = await healthRes.json();
     assert(healthRes.status === 200, 'Health endpoint returns 200 OK');
     assert(healthData.status === 'nominal', 'Service status is nominal');
-    assert(healthData.persistence === 'filesystem_json_store', 'Persistence is filesystem_json_store');
+    assert(typeof healthData.activeStorageEngine === 'string', 'Active storage engine is reported');
+
+    // Authenticate as Trainee
+    const loginRes = await fetch(`${API_BASE}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'rajesh.kumar', password: 'Defense@2026!' })
+    });
+    const setCookie = loginRes.headers.get('set-cookie');
+    const cookieMatch = setCookie ? setCookie.match(/cuas_session=([^;]+)/) : null;
+    const traineeCookie = cookieMatch ? `cuas_session=${cookieMatch[1]}` : '';
+
+    // Authenticate as Instructor for cleanup
+    const instLoginRes = await fetch(`${API_BASE}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'ananya.sharma', password: 'Defense@2026!' })
+    });
+    const instSetCookie = instLoginRes.headers.get('set-cookie');
+    const instCookieMatch = instSetCookie ? instSetCookie.match(/cuas_session=([^;]+)/) : null;
+    const instCookie = instCookieMatch ? `cuas_session=${instCookieMatch[1]}` : '';
 
     // TEST 2: Validation Failure on Invalid Payload
     console.log('\n--- Test 2: Input Validation (Negative Test) ---');
     const invalidRes = await fetch(`${API_BASE}/api/reports`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: traineeCookie },
       body: JSON.stringify({
         sessionId: '',
-        traineeId: '',
         droneClassification: 'unknown_drone_type',
         threatRating: 'extreme_threat',
         observationNotes: 123
@@ -50,7 +69,7 @@ async function runTests() {
     const invalidData = await invalidRes.json();
     assert(invalidRes.status === 400, 'Invalid submission returns 400 Bad Request');
     assert(invalidData.success === false, 'success is false');
-    assert(Array.isArray(invalidData.validationErrors) && invalidData.validationErrors.length >= 4, 'Returns comprehensive validation errors array');
+    assert(Array.isArray(invalidData.validationErrors) && invalidData.validationErrors.length >= 3, 'Returns comprehensive validation errors array');
 
     // TEST 3: Create and Persist Valid Observation Report
     console.log('\n--- Test 3: Create & Persist Observation Report ---');
@@ -60,11 +79,9 @@ async function runTests() {
 
     const createRes = await fetch(`${API_BASE}/api/reports`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: traineeCookie },
       body: JSON.stringify({
         sessionId: testSessionId,
-        traineeId: testTraineeId,
-        traineeName: 'Havildar Rajesh Kumar',
         droneClassification: 'commercial_micro_quad',
         threatRating: 'medium',
         observationNotes: testNotes,
@@ -80,15 +97,15 @@ async function runTests() {
     assert(createData.success === true, 'Response indicates success: true');
     assert(createData.report && createData.report.id.startsWith('REP-'), 'Report contains unique ID with REP- prefix');
     assert(createData.report.sessionId === testSessionId, 'Report preserves exact sessionId');
-    assert(createData.report.traineeId === testTraineeId, 'Report preserves authenticated traineeId');
+    assert(createData.report.traineeId === testTraineeId, 'Report derives authenticated traineeId');
     assert(createData.report.droneClassification === 'commercial_micro_quad', 'Report preserves droneClassification');
     assert(createData.report.threatRating === 'medium', 'Report preserves threatRating');
     assert(createData.report.status === 'VERIFIED', 'Report assigned valid status');
 
     const createdId = createData.report.id;
 
-    // TEST 4: Direct Filesystem Persistence Check
-    console.log('\n--- Test 4: Filesystem Database Verification ---');
+    // TEST 4: Direct Storage Verification Check
+    console.log('\n--- Test 4: Storage Verification ---');
     assert(fs.existsSync(DATA_FILE), 'Persistent file exists on disk at /data/observation_reports.json');
     const diskContent = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
     const diskReport = diskContent.find((r: any) => r.id === createdId);
@@ -97,21 +114,28 @@ async function runTests() {
 
     // TEST 5: Query Individual Report by ID
     console.log('\n--- Test 5: Fetch Report by ID ---');
-    const getSingleRes = await fetch(`${API_BASE}/api/reports/${createdId}`);
+    const getSingleRes = await fetch(`${API_BASE}/api/reports/${createdId}`, {
+      headers: { Cookie: traineeCookie }
+    });
     const getSingleData = await getSingleRes.json();
     assert(getSingleRes.status === 200, 'GET /api/reports/:id returns 200 OK');
     assert(getSingleData.report.id === createdId, 'Returned report ID matches queried ID');
 
     // TEST 6: Filtered Query by traineeId
     console.log('\n--- Test 6: Filter Reports by Trainee ---');
-    const filterRes = await fetch(`${API_BASE}/api/reports?traineeId=${testTraineeId}`);
+    const filterRes = await fetch(`${API_BASE}/api/reports?traineeId=${testTraineeId}`, {
+      headers: { Cookie: traineeCookie }
+    });
     const filterData = await filterRes.json();
     assert(filterRes.status === 200, 'GET /api/reports?traineeId=... returns 200 OK');
     assert(filterData.reports.some((r: any) => r.id === createdId), 'Filtered list includes created report');
 
     // TEST 7: Cleanup Test Record
     console.log('\n--- Test 7: Delete Test Report & Verify Disk Update ---');
-    const delRes = await fetch(`${API_BASE}/api/reports/${createdId}`, { method: 'DELETE' });
+    const delRes = await fetch(`${API_BASE}/api/reports/${createdId}`, {
+      method: 'DELETE',
+      headers: { Cookie: instCookie }
+    });
     const delData = await delRes.json();
     assert(delRes.status === 200, 'DELETE /api/reports/:id returns 200 OK');
     assert(delData.success === true, 'DELETE response success: true');

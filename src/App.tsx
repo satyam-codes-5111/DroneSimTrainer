@@ -166,9 +166,16 @@ export default function App() {
 
   // Completed simulation result submission
   const handleFinishSimulation = async (result: TrainingSessionResult) => {
-    const saved = await apiService.submitTrainingSession(result);
-    setHistory(prev => [saved, ...prev]);
-    setActiveAAR(saved);
+    try {
+      const saved = await apiService.submitTrainingSession(result);
+      setHistory(prev => [saved, ...prev.filter(s => s.id !== saved.id)]);
+      setActiveAAR(saved);
+    } catch (err) {
+      console.error('Error persisting training session to backend:', err);
+      // Keep local session display active so user can review their AAR report
+      setHistory(prev => [result, ...prev.filter(s => s.id !== result.id)]);
+      setActiveAAR(result);
+    }
   };
 
   // Create custom scenario from instructor dashboard
